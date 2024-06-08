@@ -1,2 +1,2 @@
 # cppdiscogs
-C++ interface to Discogs API
+C++ interface to Discogs API: https://www.discogs.com/developers/#
