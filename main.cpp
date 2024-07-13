@@ -1,141 +1,17 @@
 #include <iostream>
-#include <curl/curl.h>
-#include <string>
 #include <nlohmann/json.hpp>
 #include <getopt.h>
-#include <set>
+
+#include "collection.h"
 
 using std::string;
 using namespace std::literals;
-using json = nlohmann::json;
-
-static size_t writeCallback(void *contents, size_t size, size_t nmemb, string *output) {
-	size_t total_size = size * nmemb;
-	output->append((char*)contents, total_size);
-	return total_size;
-}
-
-static const std::set<string> sort_keys = {
-	"label", "artist", "title", "catno", "format", "rating", "added", "year"
-};
-
-class Client
-{
-public:
-	Client(const string &token, const string &user) :
-		mToken(token),
-		mUser(user)
-	{}
-	~Client();
-
-	bool init(string criteria);
-	bool downloadNextPage();
-	json getCollection() const { return mJson; }
-	std::vector<string> list() const;
-	int getCurrentPage() const { return mCurrentPage; }
-
-private:
-	bool getNext();
-	string mToken;
-	string mUser;
-	CURL *mCurl = nullptr;
-	json mJson;
-	int mCurrentPage = 0;
-};
-
-Client::~Client()
-{
-	std::cout << "\nClosing connection, ciao!...\n";
-	if (mCurl)
-		curl_easy_cleanup(mCurl);
-	curl_global_cleanup();
-}
-
-bool Client::init(string criteria)
-{
-	curl_global_init(CURL_GLOBAL_DEFAULT);
-
-	if (!mCurl)
-		mCurl = curl_easy_init();
-
-	if (!mCurl)
-		return false;
-
-	/* ID 0, the `All` folder, which cannot have releases added to it, and
-	   ID 1, the `Uncategorized` folder which requires a token to access.
-	 */
-	auto folder = mToken.empty() ? "0" : "1";
-
-	auto url = "https://api.discogs.com/users/"+mUser+"/collection/folders/"+folder+"/releases?sort="+criteria;
-
-	struct curl_slist *headers = NULL;
-	headers = curl_slist_append(headers, ("Authorization: Discogs token="+mToken).c_str());
-	curl_easy_setopt(mCurl, CURLOPT_URL, url.c_str());
-	curl_easy_setopt(mCurl, CURLOPT_HTTPHEADER, headers);
-	curl_easy_setopt(mCurl, CURLOPT_USERAGENT, "cppdiscogs/1.0");
-	curl_easy_setopt(mCurl, CURLOPT_WRITEFUNCTION, writeCallback);
-
-	if (!getNext())
-		return false;
-
-	std::cout << "Collection of " << mUser << " listed by " << criteria << ":\n";
-	std::cout << "\titems = " << mJson["pagination"]["items"] << std::endl;
-	std::cout << "\tpages = " << mJson["pagination"]["pages"] << std::endl;
-	std::cout << "\tper_page = " << mJson["pagination"]["per_page"] << std::endl;
-	std::cout << "\tnext = " << mJson["pagination"]["urls"]["next"] << std::endl;	
-
-	return true;
-}
-
-bool Client::downloadNextPage()
-{
-	auto next = mJson["pagination"]["urls"]["next"];
-	if (next.is_null())
-		return false;
-
-	curl_easy_setopt(mCurl, CURLOPT_URL, next.get<string>().c_str());
-	return getNext();
-}
-
-bool Client::getNext()
-{
-	string response;
-	curl_easy_setopt(mCurl, CURLOPT_WRITEDATA, &response);
-
-	auto res = curl_easy_perform(mCurl);
-
-	if (res != CURLE_OK)
-	{
-		fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-		return false;
-	}
-
-	/* Parse JSON as descibed in: 
-	 * www.discogs.com/developers#page:user-collection,header:user-collection-collection-items-by-folder
-	 */
-	mJson = json::parse(response);
-	mCurrentPage = mJson["pagination"]["page"];
-
-	return true;
-}
-
-std::vector<string> Client::list() const
-{
-	std::vector<string> titles;
-	for (auto &item : mJson["releases"])
-	{
-		string artist = item["basic_information"]["artists"][0]["name"];
-		string title = item["basic_information"]["title"];
-		string label = item["basic_information"]["labels"][0]["name"];
-		int year = item["basic_information"]["year"];
-		titles.push_back(artist + " - " + title + " (" + label + ", " + std::to_string(year) + ")");
-	}
-	return titles;
-}
 
 static void usage()
 {
-	auto criteria_list = std::accumulate(next(sort_keys.begin()), sort_keys.end(), *sort_keys.begin(), [](auto a, auto b) { return a + ", " + b; });
+	auto criteria_list = std::accumulate(next(Collection::sort_keys.begin()),
+			Collection::sort_keys.end(),
+			*Collection::sort_keys.begin(), [](auto a, auto b) { return a + ", " + b; });
 	std::cout << "Usage: cppdiscogs [options]\n"
 		"Options:\n"
 		"  -t, --token <token>				Discogs API token\n"
@@ -176,7 +52,7 @@ int main(int argc, char *argv[])
 			break;
 		case 'l':
 			criteria = optarg;
-			if (!sort_keys.contains(criteria))
+			if (!Collection::sort_keys.contains(criteria))
 			{
 				std::cout << "Invalid criteria: " << criteria << "\n";
 				usage();
@@ -198,9 +74,9 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	auto client = Client(token, user);
+	auto client = Collection(token, user, criteria);
 
-	if (!client.init(criteria))
+	if (!client.init())
 	{
 		std::cout << "Failed to initialize client\n";
 		return 1;
@@ -208,7 +84,7 @@ int main(int argc, char *argv[])
 
 	if (dump_collection)
 	{
-		std::cout << "Parsed JSON: " << std::setw(4) << client.getCollection() << "\n";
+		std::cout << "Parsed JSON: " << std::setw(4) << client.getJson() << "\n";
 		return 0;
 	}
 
@@ -220,7 +96,7 @@ int main(int argc, char *argv[])
 		if (line == "q")
 			break;
 
-		for (auto title : client.list())
+		for (auto title : client.listReleases())
 			std::cout << title << std::endl;
 	}
 	while (client.downloadNextPage());

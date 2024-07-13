@@ -7,6 +7,6 @@ find_package(CURL REQUIRED)
 
 include_directories(${CURL_INCLUDE_DIRS})
 
-add_executable(cppdiscogs main.cpp)
+add_executable(cppdiscogs main.cpp client.cpp collection.cpp)
 
 target_link_libraries(cppdiscogs ${CURL_LIBRARIES})
